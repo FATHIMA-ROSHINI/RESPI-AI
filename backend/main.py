@@ -7,9 +7,15 @@ import librosa
 from fastapi import FastAPI, UploadFile, File, HTTPException, WebSocket, WebSocketDisconnect
 from fastapi.middleware.cors import CORSMiddleware
 from contextlib import asynccontextmanager
-from backend.model import RespiratoryCNN
-from backend.model_stage2 import DiseaseClassifier
-from backend.preprocessing import AudioPreprocessor
+try:
+    from backend.model import RespiratoryCNN
+    from backend.model_stage2 import DiseaseClassifier
+    from backend.preprocessing import AudioPreprocessor
+except ImportError:
+    from model import RespiratoryCNN
+    from model_stage2 import DiseaseClassifier
+    from preprocessing import AudioPreprocessor
+
 
 # Global variables for model
 model = None
@@ -27,25 +33,41 @@ async def lifespan(app: FastAPI):
     stage2_model = DiseaseClassifier().to(device)
     processor = AudioPreprocessor()
     
+    # Correct base path for weights (same directory as this file)
+    base_dir = os.path.dirname(os.path.abspath(__file__))
+    
     # Load Stage 1 Weights
-    weights_path = "backend/model_weights.pth"
+    weights_path = os.path.join(base_dir, "model_weights.pth")
     if os.path.exists(weights_path):
         print(f"Loading Stage 1 weights from {weights_path}")
         model.load_state_dict(torch.load(weights_path, map_location=device))
     else:
-        print("Warning: Stage 1 weights not found. Using random initialization.")
+        # Fallback to current working directory
+        weights_path = "backend/model_weights.pth"
+        if os.path.exists(weights_path):
+             print(f"Loading Stage 1 weights from CWD {weights_path}")
+             model.load_state_dict(torch.load(weights_path, map_location=device))
+        else:
+            print("Warning: Stage 1 weights not found. Using random initialization.")
     
     # Load Stage 2 Weights
-    stage2_weights_path = "backend/model_stage2_weights.pth"
+    stage2_weights_path = os.path.join(base_dir, "model_stage2_weights.pth")
     if os.path.exists(stage2_weights_path):
         print(f"Loading Stage 2 weights from {stage2_weights_path}")
         stage2_model.load_state_dict(torch.load(stage2_weights_path, map_location=device))
     else:
-        print("Warning: Stage 2 weights not found. Disease prediction will be random.")
+        # Fallback to current working directory
+        stage2_weights_path = "backend/model_stage2_weights.pth"
+        if os.path.exists(stage2_weights_path):
+             print(f"Loading Stage 2 weights from CWD {stage2_weights_path}")
+             stage2_model.load_state_dict(torch.load(stage2_weights_path, map_location=device))
+        else:
+            print("Warning: Stage 2 weights not found. Disease prediction will be random.")
 
     model.eval()
     stage2_model.eval()
     yield
+
     # Cleanup if needed
 
 app = FastAPI(
@@ -176,16 +198,20 @@ async def analyze_audio(file: UploadFile = File(...)):
     global model, stage2_model, processor, device
     
     # Validation
-    if not file.filename.endswith(('.wav', '.mp3')):
+    filename = file.filename or "audio.wav"
+    if not filename.endswith(('.wav', '.mp3')):
         raise HTTPException(status_code=400, detail="Invalid file format. Please upload a WAV or MP3 file.")
     
+    temp_path = f"temp_{filename}"
     try:
         # Save temp file
-        temp_path = f"temp_{file.filename}"
         with open(temp_path, "wb") as buffer:
             shutil.copyfileobj(file.file, buffer)
             
         # Process
+        if processor is None or model is None or stage2_model is None or device is None:
+             raise HTTPException(status_code=500, detail="Models are not loaded. Check the server logs.")
+
         # extract_features returns (1, n_mfcc, time_steps) i.e. (C, H, W)
         features = processor.extract_features(temp_path)
         
@@ -208,7 +234,8 @@ async def analyze_audio(file: UploadFile = File(...)):
             disease_confidence = top_prob.item()
             
         # Cleanup
-        os.remove(temp_path)
+        if os.path.exists(temp_path):
+            os.remove(temp_path)
         
         # Risk Mapping
         # Probability 0.0 - 1.0 -> Risk 0 - 10
@@ -230,7 +257,7 @@ async def analyze_audio(file: UploadFile = File(...)):
             disclaimer = "Probabilistic association only. Not a clinical diagnosis."
 
         return {
-            "filename": file.filename,
+            "filename": filename,
             "risk_score": risk_score,
             "probability": probability,
             "classification": classification,
@@ -250,6 +277,8 @@ async def analyze_audio(file: UploadFile = File(...)):
             os.remove(temp_path)
         raise HTTPException(status_code=500, detail=str(e))
 
+
 if __name__ == "__main__":
     import uvicorn
-    uvicorn.run(app, host="127.0.0.1", port=8000)
+    uvicorn.run(app, host="0.0.0.0", port=8000)
+

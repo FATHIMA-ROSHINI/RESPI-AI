@@ -1,3 +1,4 @@
+import 'dart:async';
 import 'dart:io';
 import 'package:flutter/foundation.dart';
 import 'package:path_provider/path_provider.dart';
@@ -7,6 +8,12 @@ import 'package:permission_handler/permission_handler.dart';
 
 class AudioService {
   final _record = AudioRecorder();
+  StreamSubscription<Amplitude>? _amplitudeSubscription;
+  final StreamController<double> _noiseLevelController = StreamController<double>.broadcast();
+  
+  Stream<double> get noiseLevelStream => _noiseLevelController.stream;
+  double _currentNoiseLevel = 0.0;
+  double get currentNoiseLevel => _currentNoiseLevel;
 
   Future<String> getRecordingsDirectory() async {
     final dir = await getApplicationSupportDirectory();
@@ -51,7 +58,6 @@ class AudioService {
         await _cleanupRecordings();
         final dir = await getTemporaryDirectory();
 
-        // Use a static path to minimize entropy during testing
         final path = p.join(dir.path, 'resp_ai_recording.wav');
 
         debugPrint("CRITICAL: Starting recording to: $path");
@@ -67,6 +73,7 @@ class AudioService {
         }
 
         await _record.start(config, path: path);
+        _startAmplitudeMonitoring();
       } else {
         throw Exception("Microphone permission not granted");
       }
@@ -76,7 +83,6 @@ class AudioService {
     }
   }
 
-  /// NEW: Stream audio data directly for WebSocket transfer
   Future<Stream<List<int>>> startStreaming() async {
     if (await checkPermission()) {
       if (await _record.isRecording()) {
@@ -85,22 +91,52 @@ class AudioService {
 
       const config = RecordConfig(
         encoder: AudioEncoder.pcm16bits,
-        sampleRate: 16000, // Match AI backend sample rate
+        sampleRate: 16000,
         numChannels: 1,
       );
 
+      _startAmplitudeMonitoring();
       return await _record.startStream(config);
     } else {
       throw Exception("Microphone permission not granted");
     }
   }
 
+  void _startAmplitudeMonitoring() {
+    _amplitudeSubscription?.cancel();
+    _amplitudeSubscription = _record.onAmplitudeChanged(const Duration(milliseconds: 100)).listen(
+      (amplitude) {
+        double normalizedLevel;
+        if (amplitude.current.isNaN || amplitude.current.isInfinite) {
+          normalizedLevel = 0.0;
+        } else {
+          final dbNormalized = (amplitude.current + 60) / 60;
+          normalizedLevel = dbNormalized.clamp(0.0, 1.0);
+        }
+        _currentNoiseLevel = normalizedLevel;
+        _noiseLevelController.add(normalizedLevel);
+      },
+      onError: (e) {
+        debugPrint("Amplitude monitoring error: $e");
+        _currentNoiseLevel = 0.0;
+        _noiseLevelController.add(0.0);
+      },
+    );
+  }
+
+  void _stopAmplitudeMonitoring() {
+    _amplitudeSubscription?.cancel();
+    _amplitudeSubscription = null;
+    _currentNoiseLevel = 0.0;
+    _noiseLevelController.add(0.0);
+  }
+
   Future<String?> stopRecording() async {
+    _stopAmplitudeMonitoring();
     try {
       final path = await _record.stop();
       debugPrint("CRITICAL: Recorder stopped. Raw path returned: $path");
 
-      // Mandatory wait for OS flush
       await Future.delayed(const Duration(milliseconds: 1000));
 
       String? cleanPath = path;
@@ -108,7 +144,6 @@ class AudioService {
         cleanPath = Uri.parse(cleanPath).toFilePath();
       }
 
-      // Check provided path
       if (cleanPath != null) {
         final file = File(cleanPath);
         if (await file.exists() && await file.length() > 0) {
@@ -117,7 +152,6 @@ class AudioService {
         }
       }
 
-      // Fallback: search temp directory for ANY wav file created recently
       debugPrint("CRITICAL: Primary path failed. Searching fallback...");
       final tempDir = await getTemporaryDirectory();
       final files = tempDir.listSync();
@@ -131,7 +165,7 @@ class AudioService {
         }
       }
 
-      return cleanPath; // Return the original path if fallback discovery fails
+      return cleanPath;
     } catch (e) {
       debugPrint("CRITICAL Error stopping recording: $e");
       return null;
@@ -143,6 +177,8 @@ class AudioService {
   }
 
   void dispose() {
+    _stopAmplitudeMonitoring();
+    _noiseLevelController.close();
     _record.dispose();
   }
 }

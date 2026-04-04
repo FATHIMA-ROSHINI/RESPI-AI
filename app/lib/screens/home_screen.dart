@@ -1,6 +1,5 @@
 import 'dart:async';
 import 'dart:io';
-import 'dart:math' as math;
 import 'dart:convert';
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
@@ -8,10 +7,14 @@ import 'package:flutter_animate/flutter_animate.dart';
 import 'package:lucide_icons/lucide_icons.dart';
 import 'package:file_picker/file_picker.dart';
 import 'package:web_socket_channel/web_socket_channel.dart';
+import 'package:google_fonts/google_fonts.dart';
 import '../services/audio_service.dart';
 import '../services/api_service.dart';
 import '../providers/state_providers.dart';
 import '../models/analysis_result.dart';
+import '../widgets/medical_background.dart';
+import '../widgets/audio_widgets.dart';
+import '../widgets/info_widgets.dart';
 import 'result_screen.dart';
 
 final audioServiceProvider = Provider((ref) => AudioService());
@@ -28,12 +31,15 @@ class _HomeScreenState extends ConsumerState<HomeScreen> {
   WebSocketChannel? _wsChannel;
   StreamSubscription? _wsSubscription;
   StreamSubscription? _audioSubscription;
+  StreamSubscription? _noiseLevelSubscription;
+  final bool _showHealthTip = true;
 
   @override
   void dispose() {
     _timer?.cancel();
     _wsSubscription?.cancel();
     _audioSubscription?.cancel();
+    _noiseLevelSubscription?.cancel();
     _wsChannel?.sink.close();
     super.dispose();
   }
@@ -43,9 +49,7 @@ class _HomeScreenState extends ConsumerState<HomeScreen> {
     ref.read(recordingProvider.notifier).setDuration(0);
     _timer = Timer.periodic(const Duration(seconds: 1), (timer) {
       final currentState = ref.read(recordingProvider);
-      ref
-          .read(recordingProvider.notifier)
-          .setDuration(currentState.recordingDuration + 1);
+      ref.read(recordingProvider.notifier).setDuration(currentState.recordingDuration + 1);
     });
   }
 
@@ -66,13 +70,22 @@ class _HomeScreenState extends ConsumerState<HomeScreen> {
     );
 
     if (result != null && result.files.single.path != null) {
-      ref
-          .read(recordingProvider.notifier)
-          .setRecordedFile(result.files.single.path);
-      ref
-          .read(recordingProvider.notifier)
-          .setStatus('File selected: ${result.files.single.name}');
+      ref.read(recordingProvider.notifier).setRecordedFile(result.files.single.path);
+      ref.read(recordingProvider.notifier).setStatus('File selected: ${result.files.single.name}');
     }
+  }
+
+  void _startNoiseMonitoring() {
+    final audioService = ref.read(audioServiceProvider);
+    _noiseLevelSubscription?.cancel();
+    _noiseLevelSubscription = audioService.noiseLevelStream.listen((level) {
+      ref.read(recordingProvider.notifier).setNoiseLevel(level);
+    });
+  }
+
+  void _stopNoiseMonitoring() {
+    _noiseLevelSubscription?.cancel();
+    ref.read(recordingProvider.notifier).setNoiseLevel(0.0);
   }
 
   void _toggleRecording() async {
@@ -81,37 +94,27 @@ class _HomeScreenState extends ConsumerState<HomeScreen> {
     final notifier = ref.read(recordingProvider.notifier);
 
     if (recordingState.isRecording) {
-      // STOP RECORDING
       _stopTimer();
+      _stopNoiseMonitoring();
       notifier.setRecording(false);
       notifier.setAnalyzing(true);
       notifier.setStatus('Streaming to AI engine...');
 
-      // Tell backend we are done
       _wsChannel?.sink.add('FINISH');
-
-      // Stop audio stream
       await _audioSubscription?.cancel();
-      // record.stop() is still needed to stop the hardware
       await audioService.stopRecording();
     } else {
-      // START RECORDING (Streaming)
       try {
         final hasPermission = await audioService.checkPermission();
         if (hasPermission) {
           notifier.setStatus(null);
+          _wsChannel = await ApiService.connectStreaming();
 
-          // 1. Connect WebSocket
-          _wsChannel = ApiService.connectStreaming();
-
-          // 2. Listen for results
           _wsSubscription = _wsChannel!.stream.listen(
             (message) {
               final data = jsonDecode(message);
               if (data['status'] == 'success') {
                 final result = AnalysisResult.fromJson(data);
-
-                // Close the channel immediately after getting the result
                 _wsChannel?.sink.close();
 
                 if (mounted) {
@@ -121,7 +124,7 @@ class _HomeScreenState extends ConsumerState<HomeScreen> {
                       builder: (context) => ResultScreen(result: result),
                     ),
                   );
-                  notifier.setStatus('Analysis complete');
+                  notifier.setStatus(null);
                   notifier.setAnalyzing(false);
                 }
               } else if (data['error'] != null) {
@@ -139,12 +142,12 @@ class _HomeScreenState extends ConsumerState<HomeScreen> {
             },
           );
 
-          // 3. Start Audio Stream
           final audioStream = await audioService.startStreaming();
           _audioSubscription = audioStream.listen((chunk) {
             _wsChannel?.sink.add(chunk);
           });
 
+          _startNoiseMonitoring();
           notifier.setRecording(true);
           notifier.setStatus('Streaming Live to AI... Breath deeply');
           _startTimer();
@@ -177,11 +180,9 @@ class _HomeScreenState extends ConsumerState<HomeScreen> {
       final targetFile = File(cleanPath);
       debugPrint("Checking file at: $cleanPath");
 
-      // Polling for file to exist
-      int retries = 25; // 5 seconds (25 * 200ms)
+      int retries = 25;
       while (retries > 0) {
         if (await targetFile.exists()) {
-          // Additional check: ensure it's not a 0-byte file
           if (await targetFile.length() > 0) break;
         }
         debugPrint("File not ready, retrying ($retries)...");
@@ -203,7 +204,7 @@ class _HomeScreenState extends ConsumerState<HomeScreen> {
           context,
           MaterialPageRoute(builder: (context) => ResultScreen(result: result)),
         );
-        notifier.setStatus('Analysis complete');
+        notifier.setStatus(null);
       }
     } catch (e) {
       if (mounted && ref.read(recordingProvider).recordedFilePath != null) {
@@ -221,79 +222,48 @@ class _HomeScreenState extends ConsumerState<HomeScreen> {
     final recordingState = ref.watch(recordingProvider);
 
     return Scaffold(
-      backgroundColor: const Color(0xFF0F172A), // Slate 900
+      backgroundColor: const Color(0xFF0F172A),
       extendBodyBehindAppBar: true,
       appBar: AppBar(
         backgroundColor: Colors.transparent,
         elevation: 0,
-        title: const Text(
+        title: Text(
           'RESP-AI',
-          style: TextStyle(
+          style: GoogleFonts.plusJakartaSans(
             fontWeight: FontWeight.w900,
-            letterSpacing: 2.5,
-            fontSize: 26,
+            letterSpacing: 4.0,
+            fontSize: 20,
             color: Colors.white,
           ),
         ),
         centerTitle: true,
-        actions: [
-          Padding(
-            padding: const EdgeInsets.only(right: 8.0),
-            child: IconButton(
-              tooltip: 'Reset App',
-              icon: const Icon(
-                LucideIcons.rotateCcw,
-                color: Colors.white70,
-                size: 20,
-              ),
-              onPressed: () => ref.read(recordingProvider.notifier).reset(),
-            ),
-          ),
-        ],
       ),
-      body: Container(
-        width: double.infinity,
-        height: double.infinity,
-        decoration: const BoxDecoration(
-          gradient: LinearGradient(
-            begin: Alignment.topLeft,
-            end: Alignment.bottomRight,
-            colors: [Color(0xFF1E293B), Color(0xFF0F172A), Color(0xFF020617)],
-            stops: [0.0, 0.6, 1.0],
-          ),
-        ),
+      body: MedicalBackground(
         child: Center(
           child: ConstrainedBox(
             constraints: const BoxConstraints(maxWidth: 800),
             child: SingleChildScrollView(
-              padding: const EdgeInsets.symmetric(
-                horizontal: 24.0,
-                vertical: 100,
-              ),
+              physics: const BouncingScrollPhysics(),
+              padding: const EdgeInsets.symmetric(horizontal: 24.0, vertical: 100),
               child: Column(
                 mainAxisAlignment: MainAxisAlignment.center,
                 crossAxisAlignment: CrossAxisAlignment.center,
                 children: [
                   _buildHeader(),
-                  const SizedBox(height: 60),
+                  const SizedBox(height: 48),
                   AnimatedSwitcher(
-                    duration: const Duration(milliseconds: 500),
-                    transitionBuilder: (child, animation) => FadeTransition(
-                      opacity: animation,
-                      child: SlideTransition(
-                        position: Tween<Offset>(
-                          begin: const Offset(0, 0.05),
-                          end: Offset.zero,
-                        ).animate(animation),
-                        child: child,
-                      ),
-                    ),
+                    duration: const Duration(milliseconds: 600),
+                    switchInCurve: Curves.easeOutBack,
                     child: _buildMainActionArea(recordingState),
                   ),
-                  const SizedBox(height: 40),
+                  const SizedBox(height: 32),
                   _buildStatusCard(recordingState),
-                  const SizedBox(height: 80),
-                  _buildDisclaimerText(),
+                  if (_showHealthTip && !recordingState.isRecording) ...[
+                    const SizedBox(height: 40),
+                    _buildHealthTipSection(),
+                  ],
+                  const SizedBox(height: 48),
+                  _buildFooterInfo(),
                 ],
               ),
             ),
@@ -307,24 +277,24 @@ class _HomeScreenState extends ConsumerState<HomeScreen> {
     return Column(
       children: [
         Container(
-          margin: const EdgeInsets.only(bottom: 32),
-          padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 8),
+          margin: const EdgeInsets.only(bottom: 24),
+          padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 6),
           decoration: BoxDecoration(
-            color: Colors.amber.withValues(alpha: 0.05),
+            color: Colors.amber.withValues(alpha: 0.08),
             borderRadius: BorderRadius.circular(30),
-            border: Border.all(color: Colors.amber.withValues(alpha: 0.15)),
+            border: Border.all(color: Colors.amber.withValues(alpha: 0.2)),
           ),
           child: const Row(
             mainAxisSize: MainAxisSize.min,
             children: [
-              Icon(LucideIcons.shieldAlert, color: Colors.amber, size: 14),
-              SizedBox(width: 10),
+              Icon(LucideIcons.shieldAlert, color: Colors.amber, size: 12),
+              SizedBox(width: 8),
               Text(
-                'RESEARCH PROTOTYPE • NOT A MEDICAL DEVICE',
+                'RESEARCH PROTOTYPE - NOT A MEDICAL DEVICE',
                 style: TextStyle(
                   color: Colors.amber,
-                  fontSize: 10,
-                  fontWeight: FontWeight.w900,
+                  fontSize: 9,
+                  fontWeight: FontWeight.w800,
                   letterSpacing: 1.0,
                 ),
               ),
@@ -332,7 +302,7 @@ class _HomeScreenState extends ConsumerState<HomeScreen> {
           ),
         ),
         Container(
-          padding: const EdgeInsets.all(24),
+          padding: const EdgeInsets.all(20),
           decoration: BoxDecoration(
             shape: BoxShape.circle,
             gradient: const LinearGradient(
@@ -340,39 +310,35 @@ class _HomeScreenState extends ConsumerState<HomeScreen> {
             ),
             boxShadow: [
               BoxShadow(
-                color: const Color(0xFF3B82F6).withValues(alpha: 0.4),
-                blurRadius: 30,
-                offset: const Offset(0, 10),
+                color: const Color(0xFF3B82F6).withValues(alpha: 0.35),
+                blurRadius: 28,
+                offset: const Offset(0, 8),
               ),
             ],
           ),
-          child: const Icon(
-            LucideIcons.stethoscope,
-            color: Colors.white,
-            size: 40,
-          ),
-        ).animate().scale(duration: 800.ms, curve: Curves.easeOutBack),
-        const SizedBox(height: 32),
+          child: const Icon(LucideIcons.stethoscope, color: Colors.white, size: 32),
+        ).animate().scale(duration: 600.ms, curve: Curves.easeOutBack),
+        const SizedBox(height: 24),
         const Text(
-          'Respiratory Risk Assessment',
+          'AI-Based Respiratory Risk Assessment',
           textAlign: TextAlign.center,
           style: TextStyle(
-            fontSize: 28,
-            fontWeight: FontWeight.w900,
+            fontSize: 22,
+            fontWeight: FontWeight.w800,
             color: Colors.white,
-            letterSpacing: -0.5,
+            letterSpacing: -0.3,
           ),
-        ).animate().fadeIn(delay: 200.ms).slideY(begin: 0.1),
-        const SizedBox(height: 12),
+        ).animate().fadeIn(delay: 150.ms).slideY(begin: 0.1),
+        const SizedBox(height: 10),
         const Text(
           'Acoustic signal processing for lung health screening',
           textAlign: TextAlign.center,
           style: TextStyle(
             color: Colors.white54,
-            fontSize: 16,
+            fontSize: 14,
             fontWeight: FontWeight.w400,
           ),
-        ).animate().fadeIn(delay: 400.ms).slideY(begin: 0.1),
+        ).animate().fadeIn(delay: 300.ms).slideY(begin: 0.1),
       ],
     );
   }
@@ -385,23 +351,21 @@ class _HomeScreenState extends ConsumerState<HomeScreen> {
           _buildMicrophoneButton(state)
         else
           _buildFilePreview(state),
-        const SizedBox(height: 32),
-        if (!state.isRecording &&
-            !state.isAnalyzing &&
-            state.recordedFilePath == null)
+        const SizedBox(height: 24),
+        if (!state.isRecording && !state.isAnalyzing && state.recordedFilePath == null)
           TextButton.icon(
             onPressed: () {
               ref.read(recordingProvider.notifier).setStatus(null);
               _pickFile();
             },
-            icon: const Icon(LucideIcons.uploadCloud, size: 20),
+            icon: const Icon(LucideIcons.uploadCloud, size: 18),
             label: const Text(
               'Upload Existing Audio',
-              style: TextStyle(fontWeight: FontWeight.w600, letterSpacing: 0.5),
+              style: TextStyle(fontWeight: FontWeight.w600, letterSpacing: 0.4),
             ),
             style: TextButton.styleFrom(
               foregroundColor: Colors.blue.shade300,
-              padding: const EdgeInsets.symmetric(horizontal: 24, vertical: 12),
+              padding: const EdgeInsets.symmetric(horizontal: 20, vertical: 10),
               shape: RoundedRectangleBorder(
                 borderRadius: BorderRadius.circular(12),
               ),
@@ -420,148 +384,112 @@ class _HomeScreenState extends ConsumerState<HomeScreen> {
           Stack(
             alignment: Alignment.center,
             children: [
-              // Animated ripple when recording
               if (state.isRecording)
-                ...[1, 2, 3].map(
-                  (i) =>
-                      Container(
-                            width: 160 + (i * 50),
-                            height: 160 + (i * 50),
-                            decoration: BoxDecoration(
-                              shape: BoxShape.circle,
-                              border: Border.all(
-                                color: Colors.blueAccent.withValues(
-                                  alpha: 0.15,
-                                ),
-                                width: 1,
-                              ),
-                            ),
-                          )
-                          .animate(onPlay: (c) => c.repeat())
-                          .scale(
-                            begin: const Offset(0.8, 0.8),
-                            end: const Offset(1.6, 1.6),
-                            duration: 2.seconds,
-                            curve: Curves.easeOut,
-                          )
-                          .fadeOut(),
-                ),
-
-              // Inner halo
-              Container(
-                width: 180,
-                height: 180,
-                decoration: BoxDecoration(
-                  shape: BoxShape.circle,
-                  color:
-                      (state.isRecording ? Colors.red : const Color(0xFF2563EB))
-                          .withValues(alpha: 0.05),
-                  border: Border.all(
-                    color:
-                        (state.isRecording
-                                ? Colors.red
-                                : const Color(0xFF2563EB))
-                            .withValues(alpha: 0.1),
-                    width: 2,
-                  ),
-                ),
-              ),
-
-              // Main button
-              Container(
-                    width: 140,
-                    height: 140,
+                ...[1, 2].map(
+                  (i) => Container(
+                    width: 130,
+                    height: 130,
                     decoration: BoxDecoration(
                       shape: BoxShape.circle,
-                      gradient: LinearGradient(
-                        begin: Alignment.topLeft,
-                        end: Alignment.bottomRight,
-                        colors: state.isRecording
-                            ? [Colors.red.shade400, Colors.red.shade700]
-                            : [
-                                const Color(0xFF3B82F6),
-                                const Color(0xFF1D4ED8),
-                              ],
+                      border: Border.all(
+                        color: Colors.red.withValues(alpha: 0.15),
+                        width: 1,
                       ),
-                      boxShadow: [
-                        BoxShadow(
-                          color:
-                              (state.isRecording
-                                      ? Colors.red
-                                      : const Color(0xFF2563EB))
-                                  .withValues(alpha: 0.4),
-                          blurRadius: 40,
-                          spreadRadius: 2,
-                        ),
-                      ],
-                    ),
-                    child: Icon(
-                      state.isRecording ? LucideIcons.square : LucideIcons.mic,
-                      size: 48,
-                      color: Colors.white,
                     ),
                   )
-                  .animate(target: state.isRecording ? 1 : 0)
-                  .shimmer(duration: 2.seconds, color: Colors.white24),
-
+                      .animate(onPlay: (c) => c.repeat())
+                      .scale(
+                        begin: const Offset(1.0, 1.0),
+                        end: const Offset(2.0, 2.0),
+                        duration: (i * 1.2).seconds,
+                        curve: Curves.easeOut,
+                      )
+                      .fadeOut(),
+                ),
+              Container(
+                width: 130,
+                height: 130,
+                decoration: BoxDecoration(
+                  shape: BoxShape.circle,
+                  color: Colors.white.withValues(alpha: 0.03),
+                  border: Border.all(color: Colors.white.withValues(alpha: 0.08)),
+                ),
+              ),
+              Container(
+                width: 100,
+                height: 100,
+                decoration: BoxDecoration(
+                  shape: BoxShape.circle,
+                  gradient: LinearGradient(
+                    begin: Alignment.topLeft,
+                    end: Alignment.bottomRight,
+                    colors: state.isRecording
+                        ? [const Color(0xFFEF4444), const Color(0xFF991B1B)]
+                        : [const Color(0xFF3B82F6), const Color(0xFF1E40AF)],
+                  ),
+                  boxShadow: [
+                    BoxShadow(
+                      color: (state.isRecording ? Colors.red : const Color(0xFF2563EB))
+                          .withValues(alpha: 0.35),
+                      blurRadius: 32,
+                    ),
+                  ],
+                ),
+                child: Icon(
+                  state.isRecording ? LucideIcons.square : LucideIcons.mic,
+                  size: 36,
+                  color: Colors.white,
+                ),
+              ),
               if (state.isRecording)
                 Positioned(
-                  bottom: -15,
+                  bottom: -16,
                   child: Container(
-                    padding: const EdgeInsets.symmetric(
-                      horizontal: 14,
-                      vertical: 6,
-                    ),
+                    padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 6),
                     decoration: BoxDecoration(
-                      color: Colors.red,
-                      borderRadius: BorderRadius.circular(14),
+                      color: const Color(0xFF991B1B),
+                      borderRadius: BorderRadius.circular(16),
                       boxShadow: [
                         BoxShadow(
-                          color: Colors.black.withValues(alpha: 0.2),
-                          blurRadius: 4,
-                          offset: const Offset(0, 2),
+                          color: Colors.black.withValues(alpha: 0.25),
+                          blurRadius: 8,
                         ),
                       ],
                     ),
                     child: Text(
                       _formatDuration(state.recordingDuration),
-                      style: const TextStyle(
+                      style: GoogleFonts.plusJakartaSans(
                         color: Colors.white,
-                        fontSize: 14,
-                        fontWeight: FontWeight.w900,
-                        fontFeatures: [FontFeature.tabularFigures()],
+                        fontSize: 13,
+                        fontWeight: FontWeight.w800,
+                        fontFeatures: [const FontFeature.tabularFigures()],
                       ),
                     ),
                   ),
-                ).animate().scale().fadeIn(),
+                ).animate().scale(curve: Curves.easeOutBack).fadeIn(),
             ],
           ),
           if (state.isRecording) ...[
-            const SizedBox(height: 48),
-            SizedBox(
-              height: 30,
-              child: Row(
-                mainAxisAlignment: MainAxisAlignment.center,
-                children: List.generate(
-                  12,
-                  (index) =>
-                      Container(
-                            margin: const EdgeInsets.symmetric(horizontal: 3),
-                            width: 5,
-                            height: 10 + (math.Random().nextDouble() * 20),
-                            decoration: BoxDecoration(
-                              color: Colors.red.withValues(alpha: 0.6),
-                              borderRadius: BorderRadius.circular(3),
-                            ),
-                          )
-                          .animate(onPlay: (c) => c.repeat(reverse: true))
-                          .scaleY(
-                            begin: 0.4,
-                            end: 1.4,
-                            duration: (300 + math.Random().nextInt(400)).ms,
-                            curve: Curves.easeInOut,
-                          ),
-                ),
+            const SizedBox(height: 36),
+            WaveformVisualizer(
+              isActive: state.isRecording,
+              color: Colors.redAccent,
+              height: 60,
+            ),
+            const SizedBox(height: 16),
+            NoiseIndicator(
+              noiseLevel: state.noiseLevel,
+              isNoisy: state.noiseLevel > 0.7,
+            ),
+          ],
+          if (!state.isRecording && !state.isAnalyzing) ...[
+            const SizedBox(height: 20),
+            const Text(
+              'Tap to Start Recording',
+              style: TextStyle(
+                color: Colors.white38,
+                fontSize: 12,
+                fontWeight: FontWeight.w500,
               ),
             ),
           ],
@@ -572,17 +500,17 @@ class _HomeScreenState extends ConsumerState<HomeScreen> {
 
   Widget _buildFilePreview(RecordingState state) {
     return Container(
-      constraints: const BoxConstraints(maxWidth: 550),
-      padding: const EdgeInsets.all(28),
+      constraints: const BoxConstraints(maxWidth: 450),
+      padding: const EdgeInsets.all(24),
       decoration: BoxDecoration(
         color: Colors.white.withValues(alpha: 0.04),
-        borderRadius: BorderRadius.circular(28),
+        borderRadius: BorderRadius.circular(24),
         border: Border.all(color: Colors.white.withValues(alpha: 0.08)),
         boxShadow: [
           BoxShadow(
-            color: Colors.black.withValues(alpha: 0.2),
-            blurRadius: 20,
-            offset: const Offset(0, 10),
+            color: Colors.black.withValues(alpha: 0.15),
+            blurRadius: 16,
+            offset: const Offset(0, 8),
           ),
         ],
       ),
@@ -591,18 +519,14 @@ class _HomeScreenState extends ConsumerState<HomeScreen> {
           Row(
             children: [
               Container(
-                padding: const EdgeInsets.all(16),
+                padding: const EdgeInsets.all(14),
                 decoration: BoxDecoration(
-                  color: Colors.blueAccent.withValues(alpha: 0.1),
-                  borderRadius: BorderRadius.circular(16),
+                  color: Colors.blueAccent.withValues(alpha: 0.12),
+                  borderRadius: BorderRadius.circular(14),
                 ),
-                child: const Icon(
-                  LucideIcons.activity,
-                  color: Colors.blueAccent,
-                  size: 28,
-                ),
+                child: const Icon(LucideIcons.activity, color: Colors.blueAccent, size: 24),
               ),
-              const SizedBox(width: 20),
+              const SizedBox(width: 16),
               Expanded(
                 child: Column(
                   crossAxisAlignment: CrossAxisAlignment.start,
@@ -610,9 +534,9 @@ class _HomeScreenState extends ConsumerState<HomeScreen> {
                     const Text(
                       'READY FOR ANALYSIS',
                       style: TextStyle(
-                        fontWeight: FontWeight.w900,
-                        letterSpacing: 1.2,
-                        fontSize: 12,
+                        fontWeight: FontWeight.w800,
+                        letterSpacing: 1.0,
+                        fontSize: 10,
                         color: Colors.blueAccent,
                       ),
                     ),
@@ -621,79 +545,54 @@ class _HomeScreenState extends ConsumerState<HomeScreen> {
                       state.recordedFilePath!.split('/').last,
                       style: const TextStyle(
                         color: Colors.white,
-                        fontWeight: FontWeight.bold,
-                        fontSize: 16,
+                        fontWeight: FontWeight.w700,
+                        fontSize: 14,
                       ),
                       overflow: TextOverflow.ellipsis,
                     ),
                   ],
                 ),
               ),
-              const SizedBox(width: 8),
-              MouseRegion(
-                cursor: SystemMouseCursors.click,
-                child: GestureDetector(
-                  behavior: HitTestBehavior.opaque,
-                  onTap: () {
-                    ref.read(recordingProvider.notifier).reset();
-                  },
-                  child: Container(
-                    padding: const EdgeInsets.all(12),
-                    child: const Icon(
-                      LucideIcons.xCircle,
-                      color: Colors.white38,
-                      size: 28,
-                    ),
-                  ),
+              GestureDetector(
+                onTap: () => ref.read(recordingProvider.notifier).reset(),
+                child: Container(
+                  padding: const EdgeInsets.all(10),
+                  child: const Icon(LucideIcons.xCircle, color: Colors.white38, size: 24),
                 ),
               ),
             ],
           ),
-          const SizedBox(height: 32),
-          ElevatedButton(
-            onPressed: state.isAnalyzing
-                ? null
-                : () => _runAnalysis(state.recordedFilePath!),
-            style: ElevatedButton.styleFrom(
-              backgroundColor: const Color(0xFF2563EB),
-              foregroundColor: Colors.white,
-              minimumSize: const Size(double.infinity, 64),
-              shape: RoundedRectangleBorder(
-                borderRadius: BorderRadius.circular(18),
+          const SizedBox(height: 24),
+          SizedBox(
+            width: double.infinity,
+            child: ElevatedButton(
+              onPressed: state.isAnalyzing ? null : () => _runAnalysis(state.recordedFilePath!),
+              style: ElevatedButton.styleFrom(
+                backgroundColor: const Color(0xFF2563EB),
+                foregroundColor: Colors.white,
+                padding: const EdgeInsets.symmetric(vertical: 16),
+                shape: RoundedRectangleBorder(
+                  borderRadius: BorderRadius.circular(14),
+                ),
               ),
-              elevation: 12,
-              shadowColor: const Color(0xFF2563EB).withValues(alpha: 0.6),
-            ),
-            child: state.isAnalyzing
-                ? const Row(
-                    mainAxisAlignment: MainAxisAlignment.center,
-                    children: [
-                      SizedBox(
-                        width: 20,
-                        height: 20,
-                        child: CircularProgressIndicator(
-                          color: Colors.white,
-                          strokeWidth: 2,
+              child: state.isAnalyzing
+                  ? const Row(
+                      mainAxisAlignment: MainAxisAlignment.center,
+                      children: [
+                        SizedBox(
+                          width: 18,
+                          height: 18,
+                          child: CircularProgressIndicator(color: Colors.white, strokeWidth: 2),
                         ),
-                      ),
-                      SizedBox(width: 16),
-                      Text(
-                        'ANALYZING...',
-                        style: TextStyle(
-                          fontWeight: FontWeight.w800,
-                          letterSpacing: 1.5,
-                        ),
-                      ),
-                    ],
-                  )
-                : const Text(
-                    'START AI ANALYSIS',
-                    style: TextStyle(
-                      fontWeight: FontWeight.w900,
-                      letterSpacing: 1.5,
-                      fontSize: 16,
+                        SizedBox(width: 12),
+                        Text('ANALYZING...', style: TextStyle(fontWeight: FontWeight.w700, letterSpacing: 1.2)),
+                      ],
+                    )
+                  : const Text(
+                      'START AI ANALYSIS',
+                      style: TextStyle(fontWeight: FontWeight.w800, letterSpacing: 1.2, fontSize: 14),
                     ),
-                  ),
+            ),
           ),
         ],
       ),
@@ -703,27 +602,22 @@ class _HomeScreenState extends ConsumerState<HomeScreen> {
   Widget _buildStatusCard(RecordingState state) {
     if (state.statusMessage == null) return const SizedBox.shrink();
 
-    final isError =
-        state.statusMessage!.toLowerCase().contains('error') ||
+    final isError = state.statusMessage!.toLowerCase().contains('error') ||
         state.statusMessage!.toLowerCase().contains('failed') ||
         state.statusMessage!.toLowerCase().contains('exception');
 
     return Container(
-      constraints: const BoxConstraints(maxWidth: 500),
-      padding: const EdgeInsets.symmetric(horizontal: 24, vertical: 16),
+      constraints: const BoxConstraints(maxWidth: 450),
+      padding: const EdgeInsets.symmetric(horizontal: 20, vertical: 14),
       decoration: BoxDecoration(
         color: isError
             ? Colors.red.withValues(alpha: 0.1)
-            : (state.isRecording
-                  ? Colors.red.withValues(alpha: 0.05)
-                  : Colors.white.withValues(alpha: 0.03)),
-        borderRadius: BorderRadius.circular(16),
+            : (state.isRecording ? Colors.red.withValues(alpha: 0.05) : Colors.white.withValues(alpha: 0.03)),
+        borderRadius: BorderRadius.circular(14),
         border: Border.all(
           color: isError
-              ? Colors.red.withValues(alpha: 0.3)
-              : (state.isRecording
-                    ? Colors.red.withValues(alpha: 0.2)
-                    : Colors.white.withValues(alpha: 0.1)),
+              ? Colors.red.withValues(alpha: 0.25)
+              : (state.isRecording ? Colors.red.withValues(alpha: 0.15) : Colors.white.withValues(alpha: 0.08)),
         ),
       ),
       child: Row(
@@ -731,64 +625,76 @@ class _HomeScreenState extends ConsumerState<HomeScreen> {
         children: [
           if (state.isAnalyzing)
             const SizedBox(
-              width: 16,
-              height: 16,
-              child: CircularProgressIndicator(
-                strokeWidth: 2,
-                color: Colors.blueAccent,
-              ),
+              width: 14,
+              height: 14,
+              child: CircularProgressIndicator(strokeWidth: 2, color: Colors.blueAccent),
             ),
-          if (state.isAnalyzing) const SizedBox(width: 16),
+          if (state.isAnalyzing) const SizedBox(width: 12),
           Expanded(
             child: Text(
               state.statusMessage!,
               textAlign: isError ? TextAlign.left : TextAlign.center,
               style: TextStyle(
-                color: isError
-                    ? Colors.redAccent
-                    : (state.isRecording ? Colors.redAccent : Colors.white70),
-                fontSize: 14,
+                color: isError ? Colors.redAccent : (state.isRecording ? Colors.redAccent : Colors.white70),
+                fontSize: 13,
                 fontWeight: FontWeight.w500,
               ),
             ),
           ),
-          if (isError) ...[
-            const SizedBox(width: 8),
-            MouseRegion(
-              cursor: SystemMouseCursors.click,
-              child: GestureDetector(
-                behavior: HitTestBehavior.opaque,
-                onTap: () =>
-                    ref.read(recordingProvider.notifier).setStatus(null),
-                child: Container(
-                  padding: const EdgeInsets.all(12),
-                  child: const Icon(
-                    LucideIcons.x,
-                    color: Colors.white38,
-                    size: 24,
-                  ),
-                ),
+          if (isError)
+            GestureDetector(
+              onTap: () => ref.read(recordingProvider.notifier).setStatus(null),
+              child: const Padding(
+                padding: EdgeInsets.only(left: 8),
+                child: Icon(LucideIcons.x, color: Colors.white38, size: 18),
+              ),
+            ),
+        ],
+      ),
+    ).animate(key: ValueKey(state.statusMessage)).fadeIn().slideY(begin: 0.08);
+  }
+
+  Widget _buildHealthTipSection() {
+    final tip = HealthTipCard.defaultTips[DateTime.now().second % HealthTipCard.defaultTips.length];
+    return Column(
+      children: [
+        const Row(
+          children: [
+            Icon(LucideIcons.lightbulb, size: 14, color: Colors.white38),
+            SizedBox(width: 8),
+            Text(
+              'HEALTH TIP',
+              style: TextStyle(
+                fontSize: 10,
+                fontWeight: FontWeight.w800,
+                letterSpacing: 1.2,
+                color: Colors.white38,
               ),
             ),
           ],
-        ],
-      ),
-    ).animate(key: ValueKey(state.statusMessage)).fadeIn().slideY(begin: 0.1);
+        ),
+        const SizedBox(height: 12),
+        tip,
+      ],
+    );
   }
 
-  Widget _buildDisclaimerText() {
-    return const Padding(
-      padding: EdgeInsets.symmetric(horizontal: 20),
-      child: Text(
-        'RESEARCH PROTOTYPE • FOR SCREENING PURPOSES ONLY • NOT A CLINICAL DIAGNOSTIC DEVICE',
-        textAlign: TextAlign.center,
-        style: TextStyle(
-          color: Colors.white24,
-          fontSize: 10,
-          fontWeight: FontWeight.bold,
-          letterSpacing: 0.5,
+  Widget _buildFooterInfo() {
+    return Column(
+      children: [
+        const SecureBadge(),
+        const SizedBox(height: 24),
+        Text(
+          'FOR SCREENING PURPOSES ONLY - NOT A CLINICAL DIAGNOSTIC DEVICE',
+          textAlign: TextAlign.center,
+          style: TextStyle(
+            color: Colors.white.withValues(alpha: 0.2),
+            fontSize: 9,
+            fontWeight: FontWeight.w700,
+            letterSpacing: 0.4,
+          ),
         ),
-      ),
-    );
+      ],
+    ).animate().fadeIn(delay: 600.ms);
   }
 }

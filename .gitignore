@@ -31,3 +31,22 @@ checkpoints/
 
 # Ignore large dataset directory (20GB)
 dataset/
+
+# Flutter
+*.lock
+pubspec.lock
+.packages
+.dart_tool/
+build/
+.flutter-plugins
+.flutter-plugins-dependencies
+
+# Platform generated
+app/linux/flutter/generated_*
+app/macos/Flutter/GeneratedPluginRegistrant.swift
+app/windows/flutter/generated_*
+
+# System artifacts
+nul
+spline_page.html
+Thumbs.db

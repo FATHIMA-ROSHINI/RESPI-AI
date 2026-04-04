@@ -6,6 +6,8 @@ class RecordingState {
   final String? statusMessage;
   final String? recordedFilePath;
   final int recordingDuration;
+  final double noiseLevel;
+  final String? selectedPatientId;
 
   RecordingState({
     this.isRecording = false,
@@ -13,6 +15,8 @@ class RecordingState {
     this.statusMessage,
     this.recordedFilePath,
     this.recordingDuration = 0,
+    this.noiseLevel = 0.0,
+    this.selectedPatientId,
   });
 
   RecordingState copyWith({
@@ -21,13 +25,20 @@ class RecordingState {
     String? statusMessage,
     String? recordedFilePath,
     int? recordingDuration,
+    double? noiseLevel,
+    String? selectedPatientId,
+    bool clearStatus = false,
+    bool clearFilePath = false,
+    bool clearPatient = false,
   }) {
     return RecordingState(
       isRecording: isRecording ?? this.isRecording,
       isAnalyzing: isAnalyzing ?? this.isAnalyzing,
-      statusMessage: statusMessage ?? this.statusMessage,
-      recordedFilePath: recordedFilePath ?? this.recordedFilePath,
+      statusMessage: clearStatus ? null : (statusMessage ?? this.statusMessage),
+      recordedFilePath: clearFilePath ? null : (recordedFilePath ?? this.recordedFilePath),
       recordingDuration: recordingDuration ?? this.recordingDuration,
+      noiseLevel: noiseLevel ?? this.noiseLevel,
+      selectedPatientId: clearPatient ? null : (selectedPatientId ?? this.selectedPatientId),
     );
   }
 }
@@ -45,15 +56,35 @@ class RecordingNotifier extends Notifier<RecordingState> {
   }
 
   void setStatus(String? message) {
-    state = state.copyWith(statusMessage: message);
+    if (message == null) {
+      state = state.copyWith(clearStatus: true);
+    } else {
+      state = state.copyWith(statusMessage: message);
+    }
   }
 
   void setRecordedFile(String? path) {
-    state = state.copyWith(recordedFilePath: path);
+    if (path == null) {
+      state = state.copyWith(clearFilePath: true);
+    } else {
+      state = state.copyWith(recordedFilePath: path);
+    }
   }
 
   void setDuration(int duration) {
     state = state.copyWith(recordingDuration: duration);
+  }
+
+  void setNoiseLevel(double level) {
+    state = state.copyWith(noiseLevel: level);
+  }
+
+  void setSelectedPatient(String? patientId) {
+    if (patientId == null) {
+      state = state.copyWith(clearPatient: true);
+    } else {
+      state = state.copyWith(selectedPatientId: patientId);
+    }
   }
 
   void reset() {
