@@ -24,8 +24,11 @@ interface AnalysisResult {
   };
 }
 
-const API_URL = process.env.NEXT_PUBLIC_API_URL || "http://localhost:8000";
-const DEMO_MODE = process.env.NEXT_PUBLIC_DEMO_MODE === "true";
+const API_URL = process.env.NEXT_PUBLIC_API_URL || 
+  (typeof window !== 'undefined' && window.location?.hostname?.includes('vercel') 
+    ? 'https://resp-ai-backend.up.railway.app' 
+    : "http://localhost:8000");
+const DEMO_MODE = process.env.NEXT_PUBLIC_DEMO_MODE === "true" || !API_URL.startsWith('http');
 
 function generateDemoResult(): AnalysisResult {
   const riskScore = Math.random() * 10;
@@ -68,20 +71,22 @@ export default function Home() {
         const formData = new FormData();
         formData.append("file", file);
         
-        const response = await fetch(`${API_URL}/api/analyze`, {
+let response;
+      try {
+        response = await fetch(`${API_URL}/api/analyze`, {
             method: "POST",
             body: formData,
         });
         
         if (!response.ok) {
-            throw new Error("Analysis failed. Please try again.");
+            throw new Error("Analysis failed");
         }
         
         const data: AnalysisResult = await response.json();
         setResult(data);
       } catch (e) {
           console.error(e);
-          setError("Error connecting to Resp-AI backend. Ensure the server is running.");
+          setError("Backend unavailable - click 'Try Demo Mode' to test the UI");
       } finally {
           setLoading(false);
       }
