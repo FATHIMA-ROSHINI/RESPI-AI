@@ -24,11 +24,8 @@ interface AnalysisResult {
   };
 }
 
-const API_URL = process.env.NEXT_PUBLIC_API_URL || 
-  (typeof window !== 'undefined' && window.location?.hostname?.includes('vercel') 
-    ? 'https://resp-ai-backend.up.railway.app' 
-    : "http://localhost:8000");
-const DEMO_MODE = process.env.NEXT_PUBLIC_DEMO_MODE === "true" || !API_URL.startsWith('http');
+const API_URL = typeof window !== 'undefined' ? (window.location.hostname.includes('localhost') ? 'http://localhost:8000' : '/') : 'http://localhost:8000';
+const DEMO_MODE = false;
 
 function generateDemoResult(): AnalysisResult {
   const riskScore = Math.random() * 10;

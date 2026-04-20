@@ -1,0 +1,6 @@
+{
+  "buildCommand": "pip install -r apirequirements.txt",
+  "outputDirectory": ".",
+  "framework": "python",
+  "installCommand": "pip install -r apirequirements.txt"
+}
