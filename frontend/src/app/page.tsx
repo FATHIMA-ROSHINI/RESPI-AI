@@ -24,6 +24,29 @@ interface AnalysisResult {
   };
 }
 
+const API_URL = process.env.NEXT_PUBLIC_API_URL || "http://localhost:8000";
+const DEMO_MODE = process.env.NEXT_PUBLIC_DEMO_MODE === "true";
+
+function generateDemoResult(): AnalysisResult {
+  const riskScore = Math.random() * 10;
+  const isNormal = riskScore < 3.5;
+  return {
+    filename: "demo_recording.wav",
+    risk_score: Number(riskScore.toFixed(1)),
+    probability: riskScore / 10,
+    classification: riskScore >= 7 ? "High Risk" : riskScore >= 4 ? "Mild Risk" : "Normal",
+    disease_association: {
+      condition: isNormal ? "No abnormality detected" : ["Asthma", "COPD", "Pneumonia", "Other"][Math.floor(Math.random() * 4)],
+      confidence: isNormal ? "N/A" : `${(60 + Math.random() * 35).toFixed(1)}%`,
+      disclaimer: "This is a demo result for UI testing purposes.",
+    },
+    details: {
+      detected_anomalies: isNormal ? [] : ["Abnormal respiratory patterns"],
+      medical_disclaimer: "Research Prototype - Not a Medical Device",
+    },
+  };
+}
+
 export default function Home() {
   const [file, setFile] = useState<File | null>(null);
   const [result, setResult] = useState<AnalysisResult | null>(null);
@@ -45,7 +68,7 @@ export default function Home() {
         const formData = new FormData();
         formData.append("file", file);
         
-        const response = await fetch("http://localhost:8000/api/analyze", {
+        const response = await fetch(`${API_URL}/api/analyze`, {
             method: "POST",
             body: formData,
         });
@@ -113,7 +136,7 @@ export default function Home() {
                     </div>
                   </div>
 
-                  <Waveform audioFile={file} />
+<Waveform audioFile={file} />
                   
                   <Button 
                     onClick={runAnalysis} 
@@ -127,6 +150,15 @@ export default function Home() {
                         </div>
                     ) : "Analyze Respiratory Pattern"}
                   </Button>
+                  
+                  {(DEMO_MODE || error?.includes("Error connecting")) && (
+                    <button 
+                      onClick={() => setResult(generateDemoResult())} 
+                      className="w-full h-12 border-2 border-dashed border-slate-300 text-slate-600 rounded-lg hover:bg-slate-50 transition-colors"
+                    >
+                      Try Demo Mode
+                    </button>
+                  )}
                 </div>
               )}
               
