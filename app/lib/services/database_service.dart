@@ -14,7 +14,7 @@ class DatabaseService {
 
   static Future<void> initialize() async {
     if (!_isInitialized) {
-      // Ensure sqflite is properly initialized
+      // Initialize sqflite for desktop platforms
       await getDatabasesPath();
       _isInitialized = true;
       debugPrint('Database service initialized');

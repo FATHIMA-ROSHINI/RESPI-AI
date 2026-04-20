@@ -66,6 +66,8 @@ async def lifespan(app: FastAPI):
 
     model.eval()
     stage2_model.eval()
+    
+    print(f"Models loaded successfully. Device: {device}")
     yield
 
     # Cleanup if needed
