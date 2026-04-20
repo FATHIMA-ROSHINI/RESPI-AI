@@ -68,9 +68,7 @@ export default function Home() {
         const formData = new FormData();
         formData.append("file", file);
         
-let response;
-      try {
-        response = await fetch(`${API_URL}/api/analyze`, {
+        const response = await fetch(`${API_URL}/api/analyze`, {
             method: "POST",
             body: formData,
         });
