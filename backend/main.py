@@ -30,13 +30,19 @@ async def lifespan(app: FastAPI):
     
     weights_path = os.path.join(base_dir, "model_weights.pth")
     if os.path.exists(weights_path):
-        model.load_state_dict(torch.load(weights_path, map_location=device))
-        print("Stage 1 weights loaded")
+        try:
+            model.load_state_dict(torch.load(weights_path, map_location=device))
+            print("Stage 1 weights loaded")
+        except Exception as e:
+            print(f"Could not load stage 1 weights: {e}")
     
     stage2_weights_path = os.path.join(base_dir, "model_stage2_weights.pth")
     if os.path.exists(stage2_weights_path):
-        stage2_model.load_state_dict(torch.load(stage2_weights_path, map_location=device))
-        print("Stage 2 weights loaded")
+        try:
+            stage2_model.load_state_dict(torch.load(stage2_weights_path, map_location=device))
+            print("Stage 2 weights loaded")
+        except Exception as e:
+            print(f"Could not load stage 2 weights: {e}")
     
     model.eval()
     stage2_model.eval()
